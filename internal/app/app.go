@@ -93,7 +93,9 @@ func Run() {
 	producer.Health()
 	log.Info("Successfully connected to Kafka producer")
 
-	router := delivery.NewRouter()
+	handlers := delivery.NewHandlers()
+	
+	router := delivery.NewRouter(handlers)
 	svr, err := server.NewServer(cfg, router)
 	if err != nil {
 		log.Fatalf("Unable to init svr: %v", err)
