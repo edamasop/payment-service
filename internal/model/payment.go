@@ -1,6 +1,10 @@
 package model
 
-import "github.com/shopspring/decimal"
+import (
+	"time"
+
+	"github.com/shopspring/decimal"
+)
 
 type PaymentStatus string
 
@@ -17,4 +21,6 @@ type Payment struct {
 	Status      PaymentStatus
 	TotalAmount decimal.Decimal
 	Currency    string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
