@@ -71,7 +71,15 @@ func (r *PaymentRepository) GetByID(ctx context.Context, id int64) (*model.Payme
 	p := new(model.Payment)
 
 	err := q.QueryRow(ctx,
-		`SELECT id, order_id, customer_id, status, total_amount, currency FROM payments WHERE id = $1`,
+		`SELECT id, 
+       order_id, 
+       customer_id, 
+       status, 
+       total_amount, 
+       currency, 
+       created_at,
+       updated_at
+       FROM payments WHERE id = $1`,
 		id,
 	).Scan(
 		&p.ID,

@@ -45,8 +45,18 @@ func (r *OutboxRepository) Create(ctx context.Context, event *model.OutboxEvent)
 func (r *OutboxRepository) GetByID(ctx context.Context, id int64) (*model.OutboxEvent, error) {
 	event := new(model.OutboxEvent)
 	q := r.querier(ctx)
-	err := q.QueryRow(ctx,
-		`SELECT id, order_id, customer_id, event_type, payload, created_at, processed_at, published FROM outboxes WHERE id = $1`,
+	err := q.QueryRow(
+		ctx,
+		`SELECT id,
+		   order_id,
+		   customer_id, 
+		   event_type, 
+		   payload, 
+		   created_at, 
+		   processed_at, 
+		   published 
+		FROM payment_outbox 
+		WHERE id = $1`,
 		id,
 	).Scan(
 		&event.ID,
@@ -80,7 +90,7 @@ func (r *OutboxRepository) Update(ctx context.Context, event *model.OutboxEvent)
 func (r *OutboxRepository) Delete(ctx context.Context, id int64) error {
 	q := r.querier(ctx)
 	_, err := q.Exec(ctx, `
-	DELETE FROM payment_outbox WHERE id = $1
+	DELETE FROM payment_outbox
 	WHERE id = $1`,
 		id)
 
@@ -98,7 +108,7 @@ func (r *OutboxRepository) GetUnpublished(ctx context.Context, limit int) ([]*mo
 		payload,
 		created_at,
 		processed_at,
-		published FROM payment_outbox LIMIT $1`, limit,
+		published FROM payment_outbox WHERE published = FALSE LIMIT $1`, limit,
 	)
 
 	if err != nil {

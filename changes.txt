@@ -1,0 +1,364 @@
+diff --git a/.idea/sqldialects.xml b/.idea/sqldialects.xml
+new file mode 100644
+index 0000000..d579ce0
+--- /dev/null
++++ b/.idea/sqldialects.xml
+@@ -0,0 +1,7 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<project version="4">
++  <component name="SqlDialectMappings">
++    <file url="file://$PROJECT_DIR$/migrations/20260709111749_create_payment.sql" dialect="PostgreSQL" />
++    <file url="file://$PROJECT_DIR$/migrations/20260709111753_create_outbox.sql" dialect="GenericSQL" />
++  </component>
++</project>
+\ No newline at end of file
+diff --git a/Makefile b/Makefile
+new file mode 100644
+index 0000000..5075409
+--- /dev/null
++++ b/Makefile
+@@ -0,0 +1,31 @@
++# Load environment variables from .env file
++include .env
++export
++
++# Directory where your migration files are stored
++MIGRATIONS_DIR=./migrations
++# Database driver
++DB_DRIVER=postgres
++
++# Create a new migration file. Usage: make migrate-new NAME=create_users_table
++migrate-new:
++	goose -dir $(MIGRATIONS_DIR) create $(NAME) sql
++
++# Apply all available migrations
++migrate-up:
++	goose -dir $(MIGRATIONS_DIR) $(DB_DRIVER) "$(POSTGRES_DSN)" up
++
++# Roll back the last migration
++migrate-down:
++	goose -dir $(MIGRATIONS_DIR) $(DB_DRIVER) "$(POSTGRES_DSN)" down
++
++# Check the status of migrations
++migrate-status:
++	goose -dir $(MIGRATIONS_DIR) $(DB_DRIVER) "$(POSTGRES_DSN)" status
++
++# Roll back all migrations
++migrate-reset:
++	goose -dir $(MIGRATIONS_DIR) $(DB_DRIVER) "$(POSTGRES_DSN)" reset
++
++
++.PHONY: migrate-new migrate-up migrate-down migrate-status migrate-reset run build
+\ No newline at end of file
+diff --git a/internal/model/payment.go b/internal/model/payment.go
+index 390d4d9..32ee4ce 100644
+--- a/internal/model/payment.go
++++ b/internal/model/payment.go
+@@ -1,6 +1,10 @@
+ package model
+ 
+-import "github.com/shopspring/decimal"
++import (
++	"time"
++
++	"github.com/shopspring/decimal"
++)
+ 
+ type PaymentStatus string
+ 
+@@ -17,4 +21,6 @@ type Payment struct {
+ 	Status      PaymentStatus
+ 	TotalAmount decimal.Decimal
+ 	Currency    string
++	CreatedAt   time.Time
++	UpdatedAt   time.Time
+ }
+diff --git a/internal/repository/postgres/outbox_repository.go b/internal/repository/postgres/outbox_repository.go
+index dacb053..b5266c6 100644
+--- a/internal/repository/postgres/outbox_repository.go
++++ b/internal/repository/postgres/outbox_repository.go
+@@ -2,6 +2,7 @@ package postgres
+ 
+ import (
+ 	"context"
++	"payment-service/internal/model"
+ 
+ 	"github.com/jackc/pgx/v5"
+ 	"github.com/jackc/pgx/v5/pgxpool"
+@@ -24,3 +25,115 @@ func (r *OutboxRepository) querier(ctx context.Context) Querier {
+ 
+ 	return r.db
+ }
++
++func (r *OutboxRepository) Create(ctx context.Context, event *model.OutboxEvent) error {
++	q := r.querier(ctx)
++	err := q.QueryRow(
++		ctx,
++		`INSERT INTO payment_outbox (order_id, customer_id, event_type, payload)
++		VALUES ($1, $2, $3, $4)
++		RETURNING id, created_at, processed_at`,
++		event.OrderID,
++		event.CustomerID,
++		event.EventType,
++		event.Payload,
++	).Scan(&event.ID, &event.CreatedAt, &event.ProcessedAt)
++
++	return err
++}
++
++func (r *OutboxRepository) GetByID(ctx context.Context, id int64) (*model.OutboxEvent, error) {
++	event := new(model.OutboxEvent)
++	q := r.querier(ctx)
++	err := q.QueryRow(ctx,
++		`SELECT id, order_id, customer_id, event_type, payload, created_at, processed_at, published FROM outboxes WHERE id = $1`,
++		id,
++	).Scan(
++		&event.ID,
++		&event.OrderID,
++		&event.CustomerID,
++		&event.EventType,
++		&event.Payload,
++		&event.CreatedAt,
++		&event.ProcessedAt,
++		&event.Published)
++
++	return event, err
++}
++
++func (r *OutboxRepository) Update(ctx context.Context, event *model.OutboxEvent) error {
++	q := r.querier(ctx)
++	_, err := q.Exec(ctx, `
++	UPDATE payment_outbox 
++	SET order_id = $2, 
++	    customer_id = $3, 
++	    event_type = $4,
++	    payload = $5, 
++	    updated_at = now(), 
++	    published = $6
++	WHERE id = $1`,
++		event.ID, event.OrderID, event.CustomerID, event.EventType, event.Payload, event.Published)
++
++	return err
++}
++
++func (r *OutboxRepository) Delete(ctx context.Context, id int64) error {
++	q := r.querier(ctx)
++	_, err := q.Exec(ctx, `
++	DELETE FROM payment_outbox WHERE id = $1
++	WHERE id = $1`,
++		id)
++
++	return err
++}
++
++func (r *OutboxRepository) GetUnpublished(ctx context.Context, limit int) ([]*model.OutboxEvent, error) {
++	q := r.querier(ctx)
++
++	rows, err := q.Query(ctx,
++		`SELECT id,
++		order_id,
++		customer_id,
++		event_type,
++		payload,
++		created_at,
++		processed_at,
++		published FROM payment_outbox LIMIT $1`, limit,
++	)
++
++	if err != nil {
++		return nil, err
++	}
++
++	defer rows.Close()
++
++	var events []*model.OutboxEvent
++	for rows.Next() {
++		event := new(model.OutboxEvent)
++
++		err := rows.Scan(
++			&event.ID,
++			&event.OrderID,
++			&event.CustomerID,
++			&event.EventType,
++			&event.Payload,
++			&event.CreatedAt,
++			&event.ProcessedAt,
++			&event.Published,
++		)
++
++		if err != nil {
++			return nil, err
++		}
++
++		events = append(events, event)
++	}
++
++	return events, nil
++}
++
++func (r *OutboxRepository) MarkPublished(ctx context.Context, id int64) error {
++	q := r.querier(ctx)
++	_, err := q.Exec(ctx, `UPDATE payment_outbox SET published = TRUE, processed_at = now() WHERE ID = $1`, id)
++	return err
++}
+diff --git a/internal/repository/postgres/payment_repository.go b/internal/repository/postgres/payment_repository.go
+index 44de3b0..00edd20 100644
+--- a/internal/repository/postgres/payment_repository.go
++++ b/internal/repository/postgres/payment_repository.go
+@@ -2,6 +2,7 @@ package postgres
+ 
+ import (
+ 	"context"
++	"payment-service/internal/model"
+ 
+ 	"github.com/jackc/pgx/v5"
+ 	"github.com/jackc/pgx/v5/pgxpool"
+@@ -24,3 +25,70 @@ func (r *PaymentRepository) querier(ctx context.Context) Querier {
+ 
+ 	return r.db
+ }
++
++func (r *PaymentRepository) Create(ctx context.Context, p *model.Payment) error {
++	q := r.querier(ctx)
++
++	return q.QueryRow(
++		ctx,
++		`INSERT INTO payments 
++		(order_id, customer_id, status, total_amount, currency)
++		VALUES ($1, $2, $3, $4, $5)
++		RETURNING id, created_at, updated_at;`,
++		p.OrderID,
++		p.CustomerID,
++		p.Status,
++		p.TotalAmount,
++		p.Currency,
++	).Scan(
++		&p.ID,
++		&p.CreatedAt,
++		&p.UpdatedAt,
++	)
++}
++
++func (r *PaymentRepository) Update(ctx context.Context, p *model.Payment) error {
++	q := r.querier(ctx)
++
++	_, err := q.Exec(ctx,
++		`UPDATE payments SET
++		order_id = $2, customer_id = $3, status = $4, total_amount = $5, currency = $6, updated_at = now()
++		WHERE id = $1
++		`,
++		p.ID,
++		p.OrderID,
++		p.CustomerID,
++		p.Status,
++		p.TotalAmount,
++		p.Currency,
++	)
++
++	return err
++}
++
++func (r *PaymentRepository) GetByID(ctx context.Context, id int64) (*model.Payment, error) {
++	q := r.querier(ctx)
++	p := new(model.Payment)
++
++	err := q.QueryRow(ctx,
++		`SELECT id, order_id, customer_id, status, total_amount, currency FROM payments WHERE id = $1`,
++		id,
++	).Scan(
++		&p.ID,
++		&p.OrderID,
++		&p.CustomerID,
++		&p.Status,
++		&p.TotalAmount,
++		&p.Currency,
++		&p.CreatedAt,
++		&p.UpdatedAt,
++	)
++
++	return p, err
++}
++
++func (r *PaymentRepository) Delete(ctx context.Context, id int64) error {
++	q := r.querier(ctx)
++	_, err := q.Exec(ctx, `DELETE FROM payments WHERE id = $1`, id)
++	return err
++}
+diff --git a/internal/repository/repository.go b/internal/repository/repository.go
+index 847ebe0..6feb186 100644
+--- a/internal/repository/repository.go
++++ b/internal/repository/repository.go
+@@ -1,9 +1,25 @@
+ package repository
+ 
++import (
++	"context"
++	"payment-service/internal/model"
++)
++
+ type Payment interface {
++	Create(ctx context.Context, p *model.Payment) error
++	Update(ctx context.Context, p *model.Payment) error
++	GetByID(ctx context.Context, id int64) (*model.Payment, error)
++	Delete(ctx context.Context, id int64) error
+ }
+ 
+ type Outbox interface {
++	Create(ctx context.Context, event *model.OutboxEvent) error
++	GetByID(ctx context.Context, id int64) (*model.OutboxEvent, error)
++	Update(ctx context.Context, event *model.OutboxEvent) error
++	Delete(ctx context.Context, id int64) error
++
++	GetUnpublished(ctx context.Context, limit int) ([]*model.OutboxEvent, error)
++	MarkPublished(ctx context.Context, id int64) error
+ }
+ 
+ type Repositories struct {
+diff --git a/migrations/20260709111749_create_payment.sql b/migrations/20260709111749_create_payment.sql
+new file mode 100644
+index 0000000..d983431
+--- /dev/null
++++ b/migrations/20260709111749_create_payment.sql
+@@ -0,0 +1,18 @@
++-- +goose Up
++-- +goose StatementBegin
++CREATE TABLE IF NOT EXISTS payments (
++    id BIGSERIAL PRIMARY KEY,
++    order_id BIGINT NOT NULL,
++    customer_id BIGINT NOT NULL,
++    status VARCHAR(50) NOT NULL,
++    total_amount NUMERIC(18, 2) NOT NULL,
++    currency CHAR(3) NOT NULL,
++    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
++    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
++);
++-- +goose StatementEnd
++
++-- +goose Down
++-- +goose StatementBegin
++DROP TABLE IF EXISTS payments;
++-- +goose StatementEnd
+diff --git a/migrations/20260709111753_create_outbox.sql b/migrations/20260709111753_create_outbox.sql
+new file mode 100644
+index 0000000..36c53dd
+--- /dev/null
++++ b/migrations/20260709111753_create_outbox.sql
+@@ -0,0 +1,18 @@
++-- +goose Up
++-- +goose StatementBegin
++CREATE TABLE IF NOT EXISTS payment_outbox (
++    id BIGSERIAL PRIMARY KEY,
++    order_id BIGINT NOT NULL,
++    customer_id BIGINT NOT NULL,
++    event_type VARCHAR(100) NOT NULL,
++    payload JSONB NOT NULL,
++    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
++    processed_at TIMESTAMPTZ,
++    published BOOLEAN NOT NULL DEFAULT FALSE
++);
++-- +goose StatementEnd
++
++-- +goose Down
++-- +goose StatementBegin
++DROP TABLE IF EXISTS payment_outbox;
++-- +goose StatementEnd
