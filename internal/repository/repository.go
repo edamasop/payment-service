@@ -3,6 +3,9 @@ package repository
 import (
 	"context"
 	"payment-service/internal/model"
+	"payment-service/internal/repository/postgres"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Payment interface {
@@ -23,10 +26,15 @@ type Outbox interface {
 }
 
 type Repositories struct {
-	Payment Payment
-	Outbox  Outbox
+	Payment   Payment
+	Outbox    Outbox
+	TxManager TxManager
 }
 
-func NewRepositories() *Repositories {
-	return &Repositories{}
+func NewRepositories(db *pgxpool.Pool) *Repositories {
+	return &Repositories{
+		Payment:   postgres.NewPaymentRepository(db),
+		Outbox:    postgres.NewOutboxRepository(db),
+		TxManager: postgres.NewTxManager(db),
+	}
 }

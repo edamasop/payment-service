@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"payment-service/internal/config"
 	delivery "payment-service/internal/delivery/http"
+	"payment-service/internal/repository"
 	"payment-service/internal/server"
+	"payment-service/internal/service"
 
 	"os"
 	"os/signal"
@@ -44,7 +46,7 @@ func Run() {
 		BootstrapServers: strings.Join(cfg.KafkaBrokers, ","),
 		GroupID:          cfg.KafkaGroupID,
 		Topics:           []string{cfg.KafkaTopic},
-		EnableLogging:    true,
+		EnableLogging:    false,
 		LogOutput:        os.Stdout,
 		ManualCommit:     true,
 		MaxRetries:       3,
@@ -79,7 +81,7 @@ func Run() {
 	producerCfg := messaging.ProducerConfig{
 		BootstrapServers:       strings.Join(cfg.KafkaBrokers, ","),
 		Topic:                  cfg.KafkaTopic,
-		EnableLogging:          true,
+		EnableLogging:          false,
 		LogOutput:              os.Stdout,
 		ErrOutput:              os.Stderr,
 		MaxAttempts:            3,
@@ -93,8 +95,10 @@ func Run() {
 	producer.Health()
 	log.Info("Successfully connected to Kafka producer")
 
-	handlers := delivery.NewHandlers()
-	
+	repositories := repository.NewRepositories(dbPool)
+	services := service.NewServices(cfg, repositories, log)
+	handlers := delivery.NewHandlers(services)
+
 	router := delivery.NewRouter(handlers)
 	svr, err := server.NewServer(cfg, router)
 	if err != nil {

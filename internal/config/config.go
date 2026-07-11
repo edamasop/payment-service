@@ -23,7 +23,8 @@ type Config struct {
 	KafkaGroupID string
 
 	// PostgreSQL Configuration
-	PostgresDSN string // Full connection string: postgres://user:pass@host:5432/dbname
+	PostgresDSN       string // Full connection string: postgres://user:pass@host:5432/dbname
+	PaymentGatewayURL string
 }
 
 // getEnv checks if an environment variable exists, otherwise returns a default value
@@ -79,6 +80,7 @@ func Load() *Config {
 
 		// PostgreSQL Configuration
 		// Format: host=localhost user=user password=pass dbname=file_db port=5432 sslmode=disable
-		PostgresDSN: getEnv("POSTGRES_DSN", "host=localhost user=postgres password=postgres dbname=file_db port=5432 sslmode=disable"),
+		PostgresDSN:       getEnv("POSTGRES_DSN", "host=localhost user=postgres password=postgres dbname=file_db port=5432 sslmode=disable"),
+		PaymentGatewayURL: getEnv("PAYMENT_GATEWAY_URL", "http://localhost:8080/v1/charges"),
 	}
 }
