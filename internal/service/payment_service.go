@@ -11,12 +11,14 @@ import (
 	"payment-service/internal/schema"
 	"strconv"
 
+	"github.com/edamasop/events"
 	"github.com/sirupsen/logrus"
 )
 
 type PaymentService struct {
 	paymentRepository        repository.Payment
 	outboxRepository         repository.Outbox
+	txManager                repository.TxManager
 	log                      *logrus.Entry
 	client                   *http.Client
 	paymentServiceWebhookURL string
@@ -26,6 +28,7 @@ type PaymentService struct {
 func NewPaymentService(
 	paymentRepository repository.Payment,
 	outboxRepository repository.Outbox,
+	txManager repository.TxManager,
 	log *logrus.Entry,
 	paymentServiceWebhookURL string,
 	paymentGatewayURL string,
@@ -33,6 +36,7 @@ func NewPaymentService(
 	return &PaymentService{
 		paymentRepository:        paymentRepository,
 		outboxRepository:         outboxRepository,
+		txManager:                txManager,
 		paymentServiceWebhookURL: paymentServiceWebhookURL,
 		paymentGatewayURL:        paymentGatewayURL,
 		client:                   &http.Client{},
@@ -147,13 +151,59 @@ func (p *PaymentService) ProcessWebhook(
 	ctx context.Context,
 	params schema.WebhookParams,
 ) error {
-	// TODO: Implement safe webhook processing
-	// 1. Verify the webhook signature (HMAC) to ensure it came from the actual provider
-	// 2. Fetch payment by ID from DB
-	// 3. Update payment status safely (e.g., PENDING -> SUCCESS/FAILED) using idempotent state machine
-	// 4. Save to Outbox table if you need to dispatch event to an Order service asynchronously
-	fmt.Printf("Processing webhook:%v\n\n", params)
-	return nil
+	id, err := strconv.ParseInt(params.PaymentID, 10, 64)
+	payment, err := p.paymentRepository.GetByID(ctx, id)
+	if err != nil {
+		p.log.Errorf("Error on getting payment record: %v", err)
+		return err
+	}
+
+	pld := events.PaymentPayload{
+		ID:          payment.ID,
+		OrderID:     payment.OrderID,
+		CustomerID:  payment.CustomerID,
+		TotalAmount: payment.TotalAmount,
+		Currency:    payment.Currency,
+	}
+
+	event := model.OutboxEvent{
+		OrderID:    payment.OrderID,
+		CustomerID: payment.CustomerID,
+	}
+
+	switch params.Status {
+	case schema.PaymentGatewayStatusSuccessful:
+		payment.Status = model.PaymentSuccess
+		event.EventType = string(events.PaymentStatusSuccessful)
+	case schema.PaymentGatewayStatusFailed:
+		payment.Status = model.PaymentFailed
+		event.EventType = string(events.PaymentStatusFailed)
+	}
+
+	pld.Status = string(payment.Status)
+	pldJSON, err := json.Marshal(pld)
+	if err != nil {
+		p.log.Errorf("Error on marshalling gateway payload: %v", err)
+		return err
+	}
+
+	event.Payload = pldJSON
+
+	return p.txManager.WithTransaction(ctx, func(ctx context.Context) error {
+		err = p.paymentRepository.Update(ctx, payment)
+		if err != nil {
+			p.log.Errorf("Error on updating payment record: %v", err)
+			return err
+		}
+
+		err = p.outboxRepository.Create(ctx, &event)
+		if err != nil {
+			p.log.Errorf("Error on creating outbox record: %v", err)
+			return err
+		}
+
+		return nil
+	})
 }
 
 func (p *PaymentService) GetStatusByOrderID(

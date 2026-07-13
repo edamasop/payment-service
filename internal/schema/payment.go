@@ -6,6 +6,11 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const (
+	PaymentGatewayStatusSuccessful = "SUCCESSFUL"
+	PaymentGatewayStatusFailed     = "FAILED"
+)
+
 type CreatePayment struct {
 	OrderID    int64           `json:"order_id"`
 	CustomerID int64           `json:"customer_id"`

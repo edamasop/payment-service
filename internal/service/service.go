@@ -30,6 +30,7 @@ func NewServices(cfg *config.Config, repos *repository.Repositories, log *logrus
 		Payment: NewPaymentService(
 			repos.Payment,
 			repos.Outbox,
+			repos.TxManager,
 			logrus.NewEntry(log),
 			paymentWebhookURL,
 			cfg.PaymentGatewayURL,
