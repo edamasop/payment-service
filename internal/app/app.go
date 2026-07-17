@@ -92,12 +92,20 @@ func Run() {
 	if err != nil {
 		log.Fatalf("Failed to initialize Kafka producer: %v", err)
 	}
+	defer func() {
+		if err := producer.Close(); err != nil {
+			log.Errorf("Error while stopping producer gracefully: %v", err)
+		}
+	}()
+
 	producer.Health()
 	log.Info("Successfully connected to Kafka producer")
 
 	repositories := repository.NewRepositories(dbPool)
 	services := service.NewServices(cfg, repositories, log)
 	handlers := delivery.NewHandlers(services)
+	outboxPoller := service.NewOutboxPoller(repositories.Outbox, producer, logrus.NewEntry(log))
+	outboxPoller.Start(ctx)
 
 	router := delivery.NewRouter(handlers)
 	svr, err := server.NewServer(cfg, router)
