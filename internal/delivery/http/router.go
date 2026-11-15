@@ -2,16 +2,39 @@ package http
 
 import (
 	"net/http"
+
 	v1 "payment-service/internal/delivery/http/v1"
 )
 
-func NewRouter(handlers *Handlers) http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle("/health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
+// Options carries everything the HTTP layer needs besides the route handlers.
+type Options struct {
+	AllowedOrigins []string
+	Monitoring     MonitoringDeps
+}
 
+func NewRouter(handlers *Handlers, opts Options) http.Handler {
+	mux := http.NewServeMux()
 	v1.RegisterPaymentRoutes(mux, handlers.Payment)
 
-	return mux
+	httpStats := newHTTPMetrics()
+	registerMonitoring(mux, opts.Monitoring, httpStats)
+
+	// Outermost first: a panic anywhere below is recovered, every response
+	// carries a request id, and every request is logged and counted.
+	return chain(
+		mux,
+		withRecovery(opts.Monitoring.Log),
+		withRequestID,
+		withCORS(opts.AllowedOrigins),
+		withAccessLog(opts.Monitoring.Log),
+		withMetrics(httpStats),
+	)
+}
+
+func chain(handler http.Handler, middlewares ...func(http.Handler) http.Handler) http.Handler {
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		handler = middlewares[i](handler)
+	}
+
+	return handler
 }

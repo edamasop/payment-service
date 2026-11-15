@@ -29,6 +29,8 @@ func Run() {
 
 	log := logrus.New()
 	log.SetOutput(os.Stdout)
+	entry := logrus.NewEntry(log)
+	startedAt := time.Now()
 
 	// 1. Initialize PostgreSQL
 	dbPool, err := pgxpool.New(ctx, cfg.PostgresDSN)
@@ -42,7 +44,11 @@ func Run() {
 	}
 	log.Info("Successfully connected to PostgreSQL")
 
-	consumerCfg := messaging.ConsumerConfig{
+	repositories := repository.NewRepositories(dbPool)
+	services := service.NewServices(cfg, repositories, log)
+
+	// 2. Consume the order stream: a new order starts its payment.
+	consumer, err := messaging.NewKafkaConsumer(messaging.ConsumerConfig{
 		BootstrapServers: strings.Join(cfg.KafkaBrokers, ","),
 		GroupID:          cfg.KafkaGroupID,
 		Topics:           cfg.KafkaConsumerTopics,
@@ -59,19 +65,12 @@ func Run() {
 		HealthCheckInterval:       15 * time.Second,
 		UnhealthyFailureThreshold: 5,
 		HealthFailureWindow:       1 * time.Minute,
-	}
-
-	consumer, err := messaging.NewKafkaConsumer(consumerCfg)
+	})
 	if err != nil {
 		log.Fatalf("Failed to initialize Kafka consumer: %v", err)
 	}
 
-	// A new order starts the payment: the client only has to send the user to
-	// the returned redirect URL.
-	repositories := repository.NewRepositories(dbPool)
-	services := service.NewServices(cfg, repositories, log)
-
-	orderConsumer := service.NewOrderConsumer(services.Payment, logrus.NewEntry(log))
+	orderConsumer := service.NewOrderConsumer(services.Payment, entry)
 	consumer.RegisterHandler(string(events.OrderCreated), orderConsumer.HandleOrderCreated)
 
 	go func() {
@@ -86,7 +85,8 @@ func Run() {
 		}
 	}()
 
-	producerCfg := messaging.ProducerConfig{
+	// 3. Publish payment events through the transactional outbox.
+	producer, err := messaging.NewKafkaProducer(messaging.ProducerConfig{
 		BootstrapServers:       strings.Join(cfg.KafkaBrokers, ","),
 		Topic:                  cfg.KafkaProducerTopic,
 		EnableLogging:          false,
@@ -94,12 +94,11 @@ func Run() {
 		ErrOutput:              os.Stderr,
 		MaxAttempts:            3,
 		AllowAutoTopicCreation: true,
-	}
-
-	producer, err := messaging.NewKafkaProducer(producerCfg)
+	})
 	if err != nil {
 		log.Fatalf("Failed to initialize Kafka producer: %v", err)
 	}
+
 	defer func() {
 		if err := producer.Close(); err != nil {
 			log.Errorf("Error while stopping producer gracefully: %v", err)
@@ -108,12 +107,23 @@ func Run() {
 
 	log.Info("Successfully connected to Kafka producer")
 
-	handlers := delivery.NewHandlers(services)
-	outboxPoller := service.NewOutboxPoller(repositories.Outbox, producer, logrus.NewEntry(log))
+	outboxPoller := service.NewOutboxPoller(repositories.Outbox, producer, entry)
 	outboxPoller.Start(ctx)
 
-	router := delivery.NewRouter(handlers)
-	svr, err := server.NewServer(cfg, router)
+	handlerChain := delivery.NewRouter(delivery.NewHandlers(services), delivery.Options{
+		AllowedOrigins: cfg.AllowedOrigins,
+		Monitoring: delivery.MonitoringDeps{
+			Service:  "payment-service",
+			DB:       dbPool,
+			Consumer: consumer,
+			Producer: producer,
+			Outbox:   outboxPoller,
+			Log:      entry,
+			Started:  startedAt,
+		},
+	})
+
+	svr, err := server.NewServer(cfg, handlerChain)
 	if err != nil {
 		log.Fatalf("Unable to init svr: %v", err)
 	}
