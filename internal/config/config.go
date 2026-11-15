@@ -20,8 +20,9 @@ type Config struct {
 
 	KafkaBrokers       []string // Parsed from comma-separated string
 	KafkaProducerTopic string
-	KafkaConsumerTopic string
-	KafkaGroupID       string
+	// KafkaConsumerTopics lists every topic this service subscribes to.
+	KafkaConsumerTopics []string
+	KafkaGroupID        string
 
 	// PostgreSQL Configuration
 	PostgresDSN       string // Full connection string: postgres://user:pass@host:5432/dbname
@@ -54,6 +55,16 @@ func getEnvAsSlice(key string, defaultValue []string, sep string) []string {
 	return items
 }
 
+// consumerTopics supports both the plural key (a list of topics) and the
+// legacy singular one, so existing .env files keep working.
+func consumerTopics() []string {
+	if topics := getEnvAsSlice("KAFKA_CONSUMER_TOPICS", nil, ","); len(topics) > 0 {
+		return topics
+	}
+
+	return getEnvAsSlice("KAFKA_CONSUMER_TOPIC", []string{"order-service"}, ",")
+}
+
 // Load initializes the configuration by loading .env and mapping environment variables
 func Load() *Config {
 	// Attempt to load .env file; if it fails, assume we are using system env variables
@@ -75,10 +86,10 @@ func Load() *Config {
 		//RedisPass: getEnv("REDIS_PASS", ""),
 
 		// Kafka Configuration
-		KafkaBrokers:       getEnvAsSlice("KAFKA_BROKERS", []string{"localhost:9092"}, ","),
-		KafkaProducerTopic: getEnv("KAFKA_PRODUCER_TOPIC", "file_service_topic"),
-		KafkaConsumerTopic: getEnv("KAFKA_CONSUMER_TOPIC", "file_service_topic"),
-		KafkaGroupID:       getEnv("KAFKA_GROUP_ID", "file_service_group"),
+		KafkaBrokers:        getEnvAsSlice("KAFKA_BROKERS", []string{"localhost:9092"}, ","),
+		KafkaProducerTopic:  getEnv("KAFKA_PRODUCER_TOPIC", "payment-service"),
+		KafkaConsumerTopics: consumerTopics(),
+		KafkaGroupID:        getEnv("KAFKA_GROUP_ID", "payment-service"),
 
 		// PostgreSQL Configuration
 		// Format: host=localhost user=user password=pass dbname=file_db port=5432 sslmode=disable

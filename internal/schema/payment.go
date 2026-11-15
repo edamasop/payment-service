@@ -62,8 +62,8 @@ type WebhookParams struct {
 }
 
 type PaymentStatusInfo struct {
-	CustomerID int64 `json:"customer_id"`
-	OrderID    string
-	Status     string
-	UpdatedAt  time.Time
+	CustomerID int64     `json:"customer_id"`
+	OrderID    string    `json:"order_id"`
+	Status     string    `json:"status"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }

@@ -1,19 +1,21 @@
 package v1
 
 import (
-	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+
 	"payment-service/internal/schema"
 	"payment-service/internal/service"
 )
 
 const (
-	webhookSecret = "my-secret-key"
+	webhookSecret     = "my-secret-key"
+	maxRequestBodyLen = 1 << 20 // 1 MiB
 )
 
 type PaymentHandler struct {
@@ -28,62 +30,99 @@ func NewPaymentHandler(paymentService service.Payment) *PaymentHandler {
 
 func (h *PaymentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req schema.CreatePayment
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "bad request"})
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
 	res, err := h.paymentService.InitializePayment(r.Context(), req)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		h.writeServiceError(w, err)
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(res)
+	writeJSON(w, http.StatusCreated, res)
 }
 
-func (h *PaymentHandler) Get(w http.ResponseWriter, r *http.Request) {}
+// Get returns the payment status of one order, which is what a frontend polls
+// after the user returns from the gateway's checkout page.
+func (h *PaymentHandler) Get(w http.ResponseWriter, r *http.Request) {
+	status, err := h.paymentService.GetStatusByOrderID(r.Context(), r.PathValue("order_id"))
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
 
-func (h *PaymentHandler) List(w http.ResponseWriter, r *http.Request) {}
+	writeJSON(w, http.StatusOK, status)
+}
+
+// List is not implemented yet.
+func (h *PaymentHandler) List(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusNotImplemented, "payment listing is not implemented yet")
+}
 
 func (h *PaymentHandler) Webhook(w http.ResponseWriter, r *http.Request) {
-	receivedSignature := r.Header.Get("X-Signature")
-
-	hash := hmac.New(sha256.New, []byte(webhookSecret))
-	bodyBytes, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodyLen))
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "bad request"})
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+	// The signature covers the exact bytes the gateway signed, so the body is
+	// read once and verified before any decoding happens.
+	mac := hmac.New(sha256.New, []byte(webhookSecret))
+	mac.Write(body)
+	expectedSignature := hex.EncodeToString(mac.Sum(nil))
 
-	hash.Write(bodyBytes)
-	expectedSignature := hex.EncodeToString(hash.Sum(nil))
-
-	if !hmac.Equal([]byte(receivedSignature), []byte(expectedSignature)) {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "signatures do not match"})
+	if !hmac.Equal([]byte(r.Header.Get("X-Signature")), []byte(expectedSignature)) {
+		writeError(w, http.StatusUnauthorized, "signatures do not match")
 		return
 	}
 
-	var req schema.WebhookParams
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "bad request"})
+	var params schema.WebhookParams
+	if err := json.Unmarshal(body, &params); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	err = h.paymentService.ProcessWebhook(r.Context(), req)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+	if err := h.paymentService.ProcessWebhook(r.Context(), params); err != nil {
+		h.writeServiceError(w, err)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+func (h *PaymentHandler) writeServiceError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, service.ErrInvalidArgument), errors.Is(err, service.ErrUnsupportedStatus):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, service.ErrPaymentNotFound):
+		writeError(w, http.StatusNotFound, "payment not found")
+	default:
+		writeError(w, http.StatusInternalServerError, "internal server error")
+	}
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyLen)
+
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(dst); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return false
+	}
+
+	return true
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
 }

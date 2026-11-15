@@ -13,6 +13,12 @@ type Payment interface {
 	Create(ctx context.Context, p *model.Payment) error
 	Update(ctx context.Context, p *model.Payment) error
 	GetByID(ctx context.Context, id int64) (*model.Payment, error)
+	// GetByOrderID returns the most recent attempt for an order (any status).
+	GetByOrderID(ctx context.Context, orderID int64) (*model.Payment, error)
+	// GetLiveByOrderID returns the pending or successful payment of an order.
+	GetLiveByOrderID(ctx context.Context, orderID int64) (*model.Payment, error)
+	// GetByIDForUpdate locks the row inside a transaction.
+	GetByIDForUpdate(ctx context.Context, id int64) (*model.Payment, error)
 	Delete(ctx context.Context, id int64) error
 }
 

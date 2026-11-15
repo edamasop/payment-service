@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/edamasop/events"
 	"github.com/edamasop/messaging"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sirupsen/logrus"
@@ -42,10 +43,9 @@ func Run() {
 	log.Info("Successfully connected to PostgreSQL")
 
 	consumerCfg := messaging.ConsumerConfig{
-
 		BootstrapServers: strings.Join(cfg.KafkaBrokers, ","),
 		GroupID:          cfg.KafkaGroupID,
-		Topics:           []string{cfg.KafkaConsumerTopic},
+		Topics:           cfg.KafkaConsumerTopics,
 		EnableLogging:    false,
 		LogOutput:        os.Stdout,
 		ManualCommit:     true,
@@ -54,7 +54,7 @@ func Run() {
 		ReadTimeout:      5 * time.Second,
 
 		EnableDLQ: true,
-		DLQTopic:  cfg.KafkaConsumerTopic + ".dlq",
+		DLQTopic:  cfg.KafkaProducerTopic + ".dlq",
 
 		HealthCheckInterval:       15 * time.Second,
 		UnhealthyFailureThreshold: 5,
@@ -65,6 +65,14 @@ func Run() {
 	if err != nil {
 		log.Fatalf("Failed to initialize Kafka consumer: %v", err)
 	}
+
+	// A new order starts the payment: the client only has to send the user to
+	// the returned redirect URL.
+	repositories := repository.NewRepositories(dbPool)
+	services := service.NewServices(cfg, repositories, log)
+
+	orderConsumer := service.NewOrderConsumer(services.Payment, logrus.NewEntry(log))
+	consumer.RegisterHandler(string(events.OrderCreated), orderConsumer.HandleOrderCreated)
 
 	go func() {
 		log.Info("Starting message consumption engine...")
@@ -98,11 +106,8 @@ func Run() {
 		}
 	}()
 
-	producer.Health()
 	log.Info("Successfully connected to Kafka producer")
 
-	repositories := repository.NewRepositories(dbPool)
-	services := service.NewServices(cfg, repositories, log)
 	handlers := delivery.NewHandlers(services)
 	outboxPoller := service.NewOutboxPoller(repositories.Outbox, producer, logrus.NewEntry(log))
 	outboxPoller.Start(ctx)
