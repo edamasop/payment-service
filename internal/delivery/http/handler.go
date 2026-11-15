@@ -9,8 +9,8 @@ type Handlers struct {
 	Payment *v1.PaymentHandler
 }
 
-func NewHandlers(services *service.Services) *Handlers {
+func NewHandlers(services *service.Services, webhookSecret string) *Handlers {
 	return &Handlers{
-		Payment: v1.NewPaymentHandler(services.Payment),
+		Payment: v1.NewPaymentHandler(services.Payment, webhookSecret),
 	}
 }

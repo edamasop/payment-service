@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"payment-service/internal/config"
 	"payment-service/internal/repository"
 	"payment-service/internal/schema"
@@ -24,15 +23,13 @@ type Services struct {
 
 func NewServices(cfg *config.Config, repos *repository.Repositories, log *logrus.Logger) *Services {
 
-	paymentWebhookURL := fmt.Sprintf("http://localhost:%v/v1/payments/webhook", cfg.Port)
-
 	return &Services{
 		Payment: NewPaymentService(
 			repos.Payment,
 			repos.Outbox,
 			repos.TxManager,
 			logrus.NewEntry(log),
-			paymentWebhookURL,
+			cfg.PaymentWebhookURL,
 			cfg.PaymentGatewayURL,
 		),
 	}

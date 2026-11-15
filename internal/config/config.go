@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
@@ -25,8 +26,15 @@ type Config struct {
 	KafkaGroupID        string
 
 	// PostgreSQL Configuration
-	PostgresDSN       string // Full connection string: postgres://user:pass@host:5432/dbname
+	PostgresDSN string // Full connection string: postgres://user:pass@host:5432/dbname
+
 	PaymentGatewayURL string
+	// PaymentWebhookURL is what we hand to the gateway as the callback target.
+	// It must be reachable from the gateway, not from the browser.
+	PaymentWebhookURL string
+	// PaymentWebhookSecret is the shared HMAC-SHA256 key used to verify
+	// gateway callbacks.
+	PaymentWebhookSecret string
 }
 
 // getEnv checks if an environment variable exists, otherwise returns a default value
@@ -65,6 +73,46 @@ func consumerTopics() []string {
 	return getEnvAsSlice("KAFKA_CONSUMER_TOPIC", []string{"order-service"}, ",")
 }
 
+// Validate fails fast on a configuration that cannot possibly work, instead of
+// failing on the first request or the first webhook.
+func (c *Config) Validate() error {
+	var problems []string
+
+	if strings.TrimSpace(c.PostgresDSN) == "" {
+		problems = append(problems, "POSTGRES_DSN is required")
+	}
+	if len(c.KafkaBrokers) == 0 {
+		problems = append(problems, "KAFKA_BROKERS is required")
+	}
+	if c.KafkaProducerTopic == "" {
+		problems = append(problems, "KAFKA_PRODUCER_TOPIC is required")
+	}
+	if len(c.KafkaConsumerTopics) == 0 {
+		problems = append(problems, "KAFKA_CONSUMER_TOPICS is required")
+	}
+	if c.KafkaGroupID == "" {
+		problems = append(problems, "KAFKA_GROUP_ID is required")
+	}
+	if c.Port == "" {
+		problems = append(problems, "PORT is required")
+	}
+	if c.PaymentGatewayURL == "" {
+		problems = append(problems, "PAYMENT_GATEWAY_URL is required")
+	}
+	if c.PaymentWebhookURL == "" {
+		problems = append(problems, "PAYMENT_WEBHOOK_URL is required")
+	}
+	if c.PaymentWebhookSecret == "" {
+		problems = append(problems, "PAYMENT_WEBHOOK_SECRET is required")
+	}
+
+	if len(problems) > 0 {
+		return fmt.Errorf("invalid configuration: %s", strings.Join(problems, "; "))
+	}
+
+	return nil
+}
+
 // Load initializes the configuration by loading .env and mapping environment variables
 func Load() *Config {
 	// Attempt to load .env file; if it fails, assume we are using system env variables
@@ -74,10 +122,12 @@ func Load() *Config {
 		log.Debug(".env file successfully loaded")
 	}
 
+	port := getEnv("PORT", "8083")
+
 	return &Config{
 		// Basic Server Settings
 		Environment:    getEnv("ENVIRONMENT", "dev.default"),
-		Port:           getEnv("PORT", "8080"),
+		Port:           port,
 		Loglevel:       getEnv("LOGLEVEL", "info"),
 		AllowedOrigins: getEnvAsSlice("ALLOWED_ORIGINS", []string{"*"}, ","),
 
@@ -93,7 +143,12 @@ func Load() *Config {
 
 		// PostgreSQL Configuration
 		// Format: host=localhost user=user password=pass dbname=file_db port=5432 sslmode=disable
-		PostgresDSN:       getEnv("POSTGRES_DSN", "host=localhost user=postgres password=postgres dbname=file_db port=5432 sslmode=disable"),
-		PaymentGatewayURL: getEnv("PAYMENT_GATEWAY_URL", "http://localhost:8080/v1/charges"),
+		PostgresDSN: getEnv("POSTGRES_DSN", "host=localhost user=postgres password=postgres dbname=file_db port=5432 sslmode=disable"),
+
+		PaymentGatewayURL: getEnv("PAYMENT_GATEWAY_URL", "http://localhost:8082/v1/charges"),
+		// The gateway has to call us back; localhost is correct for a local
+		// run and wrong inside Docker, where this must be the service name.
+		PaymentWebhookURL:    getEnv("PAYMENT_WEBHOOK_URL", fmt.Sprintf("http://localhost:%s/v1/payments/webhook", port)),
+		PaymentWebhookSecret: getEnv("PAYMENT_WEBHOOK_SECRET", ""),
 	}
 }

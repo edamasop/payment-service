@@ -13,18 +13,19 @@ import (
 	"payment-service/internal/service"
 )
 
-const (
-	webhookSecret     = "my-secret-key"
-	maxRequestBodyLen = 1 << 20 // 1 MiB
-)
+const maxRequestBodyLen = 1 << 20 // 1 MiB
 
 type PaymentHandler struct {
 	paymentService service.Payment
+	webhookSecret  []byte
 }
 
-func NewPaymentHandler(paymentService service.Payment) *PaymentHandler {
+// NewPaymentHandler takes the HMAC key from configuration: a secret compiled
+// into the binary is the same secret in every environment and in the repo.
+func NewPaymentHandler(paymentService service.Payment, webhookSecret string) *PaymentHandler {
 	return &PaymentHandler{
 		paymentService: paymentService,
+		webhookSecret:  []byte(webhookSecret),
 	}
 }
 
@@ -69,7 +70,7 @@ func (h *PaymentHandler) Webhook(w http.ResponseWriter, r *http.Request) {
 
 	// The signature covers the exact bytes the gateway signed, so the body is
 	// read once and verified before any decoding happens.
-	mac := hmac.New(sha256.New, []byte(webhookSecret))
+	mac := hmac.New(sha256.New, h.webhookSecret)
 	mac.Write(body)
 	expectedSignature := hex.EncodeToString(mac.Sum(nil))
 

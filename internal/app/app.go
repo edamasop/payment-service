@@ -30,6 +30,11 @@ func Run() {
 
 	log := logrus.New()
 	log.SetOutput(os.Stdout)
+
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Invalid configuration: %v", err)
+	}
+
 	entry := logrus.NewEntry(log)
 	startedAt := time.Now()
 
@@ -98,7 +103,7 @@ func Run() {
 	outboxPoller := service.NewOutboxPoller(repositories.Outbox, producer, entry)
 	outboxPoller.Start(ctx)
 
-	handlerChain := delivery.NewRouter(delivery.NewHandlers(services), delivery.Options{
+	handlerChain := delivery.NewRouter(delivery.NewHandlers(services, cfg.PaymentWebhookSecret), delivery.Options{
 		AllowedOrigins: cfg.AllowedOrigins,
 		Monitoring: delivery.MonitoringDeps{
 			Service:  "payment-service",
